@@ -614,7 +614,7 @@ body.view-tecnico [data-view~="tecnico"]{display:block;}
       <div class="selector-box">
         <div class="lbl" style="font-weight:700;color:var(--pink-dark);margin-bottom:4px;">Premissas do programa (ajustáveis)</div>
         <div class="controls">
-          <div class="ctl"><label>Cobertura atual</label><input type="range" id="in-cob-atual" min="1" max="100" value="10" oninput="onInputChange()"><span class="rangeval" id="v-cob-atual">10%</span></div>
+          <div class="ctl"><label>Cobertura atual (ajuste manual)</label><input type="range" id="in-cob-atual" min="1" max="100" value="10" oninput="onInputChange()"><span class="rangeval" id="v-cob-atual">10%</span></div>
           <div class="ctl"><label>Cobertura-meta</label><input type="range" id="in-cob-meta" min="1" max="100" value="50" oninput="onInputChange()"><span class="rangeval" id="v-cob-meta">50%</span></div>
           <div class="ctl"><label>Adesão ao convite</label><input type="range" id="in-adesao" min="1" max="100" value="80" oninput="onInputChange()"><span class="rangeval" id="v-adesao">80%</span></div>
           <div class="ctl"><label>Preço por análise (R$) [estimado]</label><input type="number" id="in-preco" value="50" oninput="onInputChange()"></div>
@@ -622,7 +622,8 @@ body.view-tecnico [data-view~="tecnico"]{display:block;}
           <div class="ctl"><label>% casos suspeitos confirmados como câncer</label><input type="number" id="in-confirmacao" value="15" oninput="onInputChange()"></div>
           <div class="ctl"><label>% casos confirmados que eram tardios</label><input type="number" id="in-tardios" value="41" oninput="onInputChange()"></div>
         </div>
-        <div class="callout" data-view="both" style="margin-top:14px;">O preço de R$50/análise é uma <b>estimativa nossa</b> para simulação — a Linda LifeTech comercializa por aluguel de equipamento + valor por imagem, valor exato ainda a confirmar com a empresa. O "% confirmado como câncer" também é uma premissa ajustável (não publicada pela empresa) — como em qualquer rastreio, a maioria dos achados suspeitos não se confirma como câncer.</div>
+        <div class="callout warn" data-view="both" style="margin-top:14px;"><b>"Cobertura atual" não muda sozinha ao trocar de município</b> — o IBGE não publica cobertura de rastreamento mamográfico por município, só a faixa nacional observada pelo INCA (5,3% a 33%, variando por região). Por isso o valor começa sempre em 10% (uma estimativa conservadora de referência) e <b>precisa ser ajustado manualmente</b> por quem conhece a realidade local de cada município.</div>
+        <div class="callout" data-view="both" style="margin-top:10px;">O preço de R$50/análise é uma <b>estimativa nossa</b> para simulação — a Linda LifeTech comercializa por aluguel de equipamento + valor por imagem, valor exato ainda a confirmar com a empresa. O "% confirmado como câncer" também é uma premissa ajustável (não publicada pela empresa) — como em qualquer rastreio, a maioria dos achados suspeitos não se confirma como câncer.</div>
       </div>
       <div class="selector-box">
         <div class="lbl" style="font-weight:700;color:var(--pink-dark);margin-bottom:4px;">Funil de rastreio</div>
@@ -936,13 +937,13 @@ function recompute(){
   lastCalc = {
     muni: selected, steps,
     premissas: [
-      ['Cobertura atual', (covAtual*100).toFixed(1)+'%'],
-      ['Cobertura-meta', (covMeta*100).toFixed(1)+'%'],
-      ['Adesão ao convite', (adesao*100).toFixed(1)+'%'],
+      ['Cobertura atual', (covAtual*100).toFixed(1).replace('.',',')+'%'],
+      ['Cobertura-meta', (covMeta*100).toFixed(1).replace('.',',')+'%'],
+      ['Adesão ao convite', (adesao*100).toFixed(1).replace('.',',')+'%'],
       ['Preço por análise (estimado)', 'R$ '+preco.toLocaleString('pt-BR')],
       ['Casos suspeitos (% dos exames)', (taxaSuspeita*100).toFixed(2).replace('.',',')+'%'],
-      ['% casos suspeitos confirmados como câncer', (pctConfirmacao*100).toFixed(1)+'%'],
-      ['% casos confirmados que eram tardios', (pctTardios*100).toFixed(1)+'%'],
+      ['% casos suspeitos confirmados como câncer', (pctConfirmacao*100).toFixed(1).replace('.',',')+'%'],
+      ['% casos confirmados que eram tardios', (pctTardios*100).toFixed(1).replace('.',',')+'%'],
     ],
     custoPrograma, roiFin, roiSoc, custoEvitado, valorSocial, beneficioTotal
   };
@@ -950,9 +951,31 @@ function recompute(){
 let lastCalc = null;
 
 /* ---------------- gráficos (Chart.js -> canvas -> imagem, pra embutir no PDF) ---------------- */
+/* plugin leve (sem lib externa) que escreve o valor numérico na ponta de cada barra horizontal */
+const valueLabelPlugin = {
+  id: 'valueLabels',
+  afterDatasetsDraw(chart){
+    const {ctx} = chart;
+    chart.data.datasets.forEach((dataset, di)=>{
+      const meta = chart.getDatasetMeta(di);
+      meta.data.forEach((bar, i)=>{
+        const value = dataset.data[i];
+        ctx.save();
+        ctx.fillStyle = '#2A1F27';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(Math.round(value).toLocaleString('pt-BR'), bar.x + 8, bar.y);
+        ctx.restore();
+      });
+    });
+  }
+};
+
 function chartToImage(config, w, h){
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
+  config.plugins = (config.plugins||[]).concat([valueLabelPlugin]);
   const chart = new Chart(canvas.getContext('2d'), config);
   const img = chart.toBase64Image('image/png', 1.0);
   chart.destroy();
@@ -970,7 +993,7 @@ function buildRegionalChartImage(m){
   return chartToImage({
     type:'bar',
     data:{labels, datasets:[{data, backgroundColor:bg}]},
-    options:{responsive:false, animation:false, indexAxis:'y',
+    options:{responsive:false, animation:false, indexAxis:'y', layout:{padding:{right:70}},
       plugins:{legend:{display:false}, title:{display:true,text:'Mulheres 20+ — comparação regional (Censo 2022)',font:{size:13}}},
       scales:{x:{ticks:{callback:v=>v.toLocaleString('pt-BR')}}}}
   }, 700, 260);
@@ -985,14 +1008,14 @@ function buildFunnelChartImages(steps){
   const imgAlcance = chartToImage({
     type:'bar',
     data:{labels:alcance.map(s=>s[0]), datasets:[{data:alcance.map(s=>Math.round(s[1])), backgroundColor:'#E31D94'}]},
-    options:{responsive:false, animation:false, indexAxis:'y',
+    options:{responsive:false, animation:false, indexAxis:'y', layout:{padding:{right:70}},
       plugins:{legend:{display:false}, title:{display:true,text:'Alcance do programa — estimativa',font:{size:13}}},
       scales:{x:{ticks:{callback:v=>v.toLocaleString('pt-BR')}}}}
   }, 700, 190);
   const imgDeteccao = chartToImage({
     type:'bar',
     data:{labels:deteccao.map(s=>s[0]), datasets:[{data:deteccao.map(s=>Math.round(s[1])), backgroundColor:'#4D65FF'}]},
-    options:{responsive:false, animation:false, indexAxis:'y',
+    options:{responsive:false, animation:false, indexAxis:'y', layout:{padding:{right:70}},
       plugins:{legend:{display:false}, title:{display:true,text:'Resultados de detecção — estimativa',font:{size:13}}},
       scales:{x:{ticks:{callback:v=>v.toLocaleString('pt-BR')}}}}
   }, 700, 230);
@@ -1018,24 +1041,32 @@ function gerarTextoPNSB(c){
 }
 
 /* ---------------- Proposta em PDF (jsPDF, mesmo padrão do Raio-X) ---------------- */
+const MESES_PT = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+function dataExtenso(d){ return d.getDate()+' de '+MESES_PT[d.getMonth()]+' de '+d.getFullYear(); }
+
 function montarPropostaPDF(){
   if(!lastCalc) { alert('Selecione um município primeiro.'); return null; }
-  const c = lastCalc, m = c.muni;
+  const c = lastCalc, m = c.muni, uf = m[1];
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({unit:'pt', format:'a4'});
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 40; let y = 46;
   const destNome = document.getElementById('in-dest-nome').value.trim();
+  const hoje = new Date();
+  const refDoc = 'LINDA-'+uf+'-'+hoje.getFullYear()+String(hoje.getMonth()+1).padStart(2,'0')+String(hoje.getDate()).padStart(2,'0');
 
+  function brandBar(){
+    doc.setFillColor(227,29,148); doc.rect(0,0,W,26,'F');
+    doc.setTextColor(255); doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text('G3 HEALTH SERVICE', M, 17);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.text('Proposta — Linda: rastreio de câncer de mama por infravermelho + IA', W-M, 17, {align:'right'});
+  }
+  /* cabeçalho "corrido", usado nas páginas 2 e 3 — só marca/orientação, sem repetir o ofício inteiro */
   function header(subtitulo){
-    doc.setFillColor(227,29,148); doc.rect(0,0,W,30,'F');
-    doc.setTextColor(255); doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text('G3 HEALTH SERVICE', M, 20);
-    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.text('Proposta — Linda: rastreio de câncer de mama por infravermelho + IA', W-M, 20, {align:'right'});
-    doc.setTextColor(163,18,106); doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.text('PROPOSTA — '+m[0]+'/'+m[1], M, 46);
+    brandBar();
+    doc.setTextColor(163,18,106); doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text('Proposta — '+m[0]+'/'+uf, M, 46);
     doc.setTextColor(110); doc.setFont('helvetica','normal'); doc.setFontSize(9);
-    let sub = subtitulo+' · gerado em '+new Date().toLocaleDateString('pt-BR');
-    if(destNome) sub = 'Para: '+destNome+' · '+sub;
-    doc.text(sub, M, 62);
-    return 80;
+    doc.text(subtitulo+' · Ref. '+refDoc, M, 60);
+    doc.setDrawColor(230); doc.line(M, 68, W-M, 68);
+    return 82;
   }
   function footer(){
     const pages = doc.internal.getNumberOfPages();
@@ -1045,9 +1076,32 @@ function montarPropostaPDF(){
       doc.text('Fontes: IBGE (Censo 2022), INCA, Observatório de Oncologia, lindalifetech.com · pág. '+i+'/'+pages, M, H-12); }
   }
 
-  /* ---- página 1: PNSB ---- */
-  y = header('IBGE Censo 2022 · Problema, Necessidade, Solução e Benefício (PNSB)');
-  y += 10;
+  /* ---- página 1: cabeçalho formal tipo ofício + PNSB ---- */
+  brandBar();
+  y = 54;
+  doc.setTextColor(42,31,39); doc.setFont('helvetica','bold'); doc.setFontSize(14);
+  doc.text('PROPOSTA TÉCNICA E COMERCIAL', M, y);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(110);
+  doc.text('Brasília/DF, '+dataExtenso(hoje), W-M, y, {align:'right'});
+  y += 14;
+  doc.setFontSize(8.5); doc.setTextColor(140);
+  doc.text('Referência: '+refDoc, M, y);
+  y += 22;
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(50);
+  doc.text('Ao(À) '+(destNome ? destNome : 'Ilmo(a). Sr(a). Secretário(a) Municipal de Saúde'), M, y); y += 13;
+  doc.text('Prefeitura Municipal de '+m[0]+'/'+uf, M, y); y += 20;
+
+  doc.setFont('helvetica','bold'); doc.text('Assunto:', M, y);
+  const assuntoOffset = doc.getTextWidth('Assunto:  ');
+  doc.setFont('helvetica','normal');
+  const assuntoLinhas = doc.splitTextToSize('Proposta técnica e comercial para implantação do programa de rastreio de câncer de mama Linda em '+m[0]+'/'+uf+'.', W-2*M-assuntoOffset);
+  doc.text(assuntoLinhas, M+assuntoOffset, y);
+  y += assuntoLinhas.length*12 + 12;
+
+  doc.setDrawColor(200); doc.setLineWidth(0.7); doc.line(M, y, W-M, y);
+  y += 20;
+
   const pnsb = gerarTextoPNSB(c);
   const blocos = [
     ['1 · PROBLEMA', pnsb.problema, [155,34,34]],
