@@ -829,6 +829,20 @@ const MUNI_NORM = MUNICIPIOS.map(m => normalize(m[0]+' '+m[1]));
 let selected = null;
 function findMuni(nome,uf){ return MUNICIPIOS.find(m=>m[0]===nome && m[1]===uf); }
 
+/* ---------------- agregados por UF + capitais (pra comparação regional na proposta) ---------------- */
+const CAPITAIS = {AC:'Rio Branco',AL:'Maceió',AP:'Macapá',AM:'Manaus',BA:'Salvador',CE:'Fortaleza',DF:'Brasília',ES:'Vitória',GO:'Goiânia',MA:'São Luís',MT:'Cuiabá',MS:'Campo Grande',MG:'Belo Horizonte',PA:'Belém',PB:'João Pessoa',PR:'Curitiba',PE:'Recife',PI:'Teresina',RJ:'Rio de Janeiro',RN:'Natal',RS:'Porto Alegre',RO:'Porto Velho',RR:'Boa Vista',SC:'Florianópolis',SP:'São Paulo',SE:'Aracaju',TO:'Palmas'};
+const UF_STATS = {};
+MUNICIPIOS.forEach(m=>{
+  const uf = m[1];
+  if(!UF_STATS[uf]) UF_STATS[uf] = {pop:0, w20:0, capital:null};
+  UF_STATS[uf].pop += m[2];
+  UF_STATS[uf].w20 += m[3];
+});
+Object.keys(UF_STATS).forEach(uf=>{
+  const capNome = CAPITAIS[uf];
+  UF_STATS[uf].capital = capNome ? findMuni(capNome, uf) : null;
+});
+
 const searchInput = document.getElementById('muni-search');
 const dropdown = document.getElementById('muni-dropdown');
 searchInput.addEventListener('input', ()=>{
@@ -935,32 +949,137 @@ function recompute(){
 }
 let lastCalc = null;
 
+/* ---------------- gráficos (Chart.js -> canvas -> imagem, pra embutir no PDF) ---------------- */
+function chartToImage(config, w, h){
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const chart = new Chart(canvas.getContext('2d'), config);
+  const img = chart.toBase64Image('image/png', 1.0);
+  chart.destroy();
+  return img;
+}
+
+function buildRegionalChartImage(m){
+  const uf = m[1];
+  const ufStats = UF_STATS[uf];
+  const capital = ufStats.capital;
+  const labels = [], data = [], bg = [];
+  labels.push(m[0]+'/'+uf); data.push(m[3]); bg.push('#E31D94');
+  if(capital && capital[0] !== m[0]){ labels.push('Capital ('+capital[0]+')'); data.push(capital[3]); bg.push('#4D65FF'); }
+  labels.push('Total do estado ('+uf+')'); data.push(ufStats.w20); bg.push('#2A1F27');
+  return chartToImage({
+    type:'bar',
+    data:{labels, datasets:[{data, backgroundColor:bg}]},
+    options:{responsive:false, animation:false, indexAxis:'y',
+      plugins:{legend:{display:false}, title:{display:true,text:'Mulheres 20+ — comparação regional (Censo 2022)',font:{size:13}}},
+      scales:{x:{ticks:{callback:v=>v.toLocaleString('pt-BR')}}}}
+  }, 700, 260);
+}
+
+/* dois gráficos separados (não um só) porque "população-alvo" (centenas de milhar) e "mortes evitadas"
+   (dezenas/centenas) ficam em escalas tão diferentes que, num único bar chart linear, as barras menores
+   somem visualmente — separar em "alcance do programa" vs. "resultados de detecção" mantém as duas legíveis. */
+function buildFunnelChartImages(steps){
+  const alcance = steps.slice(0,3);
+  const deteccao = steps.slice(3);
+  const imgAlcance = chartToImage({
+    type:'bar',
+    data:{labels:alcance.map(s=>s[0]), datasets:[{data:alcance.map(s=>Math.round(s[1])), backgroundColor:'#E31D94'}]},
+    options:{responsive:false, animation:false, indexAxis:'y',
+      plugins:{legend:{display:false}, title:{display:true,text:'Alcance do programa — estimativa',font:{size:13}}},
+      scales:{x:{ticks:{callback:v=>v.toLocaleString('pt-BR')}}}}
+  }, 700, 190);
+  const imgDeteccao = chartToImage({
+    type:'bar',
+    data:{labels:deteccao.map(s=>s[0]), datasets:[{data:deteccao.map(s=>Math.round(s[1])), backgroundColor:'#4D65FF'}]},
+    options:{responsive:false, animation:false, indexAxis:'y',
+      plugins:{legend:{display:false}, title:{display:true,text:'Resultados de detecção — estimativa',font:{size:13}}},
+      scales:{x:{ticks:{callback:v=>v.toLocaleString('pt-BR')}}}}
+  }, 700, 230);
+  return {imgAlcance, imgDeteccao};
+}
+
+/* ---------------- narrativa PNSB (Problema / Necessidade / Solução / Benefício), com os números da simulação atual ---------------- */
+function gerarTextoPNSB(c){
+  const m = c.muni, uf = m[1];
+  const passo = (label)=> c.steps.find(s=>s[0]===label)[1];
+  const covAtual = c.premissas.find(p=>p[0]==='Cobertura atual')[1];
+  const covMeta = c.premissas.find(p=>p[0]==='Cobertura-meta')[1];
+
+  const problema = 'O câncer de mama é a doença que mais mata mulheres no Brasil: 73.610 novos casos estimados em 2025 e mais de 20 mil óbitos por ano (INCA). A cobertura de rastreamento mamográfico está muito abaixo da meta do INCA de 70%, variando entre 5,3% e 33% conforme a região — e cerca de 80% dos municípios brasileiros não possuem sequer um mamógrafo. Em '+m[0]+'/'+uf+', a cobertura de rastreio estimada hoje é de apenas '+covAtual+', para uma população-alvo de '+m[3].toLocaleString('pt-BR')+' mulheres com 20 anos ou mais (Censo 2022, IBGE).';
+
+  const necessidade = 'Para levar '+m[0]+' a uma cobertura-meta de '+covMeta+', seria preciso incluir mais '+fmt(passo('Mulheres adicionais no rastreio'))+' mulheres no programa de rastreio — considerando a adesão estimada ao convite, isso representa '+fmt(passo('Exames realizados (c/ adesão)'))+' exames adicionais. Mais de 40% das mulheres já testadas pela Linda em outras cidades nunca haviam feito nenhum rastreio de câncer de mama antes, o que sugere barreira de acesso semelhante em municípios como '+m[0]+'.';
+
+  const solucao = 'A Linda é um dispositivo móvel que usa imagem infravermelha e inteligência artificial para o rastreio (triagem) do câncer de mama — indolor, sem contato físico e sem radiação, com resultado em segundos. É complementar à mamografia (não a substitui) e amplia o alcance do rastreio para mulheres fora da faixa etária núcleo da mamografia, mulheres com mamas densas ou próteses, casos BI-RADS 0 (mamografia inconclusiva), e regiões sem mamógrafo disponível.';
+
+  const beneficio = 'Com as premissas simuladas para '+m[0]+', o programa geraria um investimento estimado de R$ '+fmt(c.custoPrograma)+', com retorno socioeconômico estimado em '+(c.roiSoc*100).toFixed(1).replace('.',',')+'% — evitando '+fmt(passo('Mortes potencialmente evitadas'))+' mortes por meio da detecção precoce. Além do impacto direto, o programa organiza e padroniza dados de rastreio do município, que podem alimentar indicadores do SUS e do INCA.';
+
+  return {problema, necessidade, solucao, beneficio};
+}
+
 /* ---------------- Proposta em PDF (jsPDF, mesmo padrão do Raio-X) ---------------- */
 function montarPropostaPDF(){
   if(!lastCalc) { alert('Selecione um município primeiro.'); return null; }
   const c = lastCalc, m = c.muni;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({unit:'pt', format:'a4'});
-  const W = doc.internal.pageSize.getWidth(), M = 40; let y = 46;
-
-  doc.setFillColor(227,29,148); doc.rect(0,0,W,30,'F');
-  doc.setTextColor(255); doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text('G3 HEALTH SERVICE', M, 20);
-  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.text('Proposta — Linda: rastreio de câncer de mama por infravermelho + IA', W-M, 20, {align:'right'});
-
-  doc.setTextColor(163,18,106); doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.text('PROPOSTA — '+m[0]+'/'+m[1], M, y); y+=16;
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 40; let y = 46;
   const destNome = document.getElementById('in-dest-nome').value.trim();
-  doc.setTextColor(110); doc.setFont('helvetica','normal'); doc.setFontSize(9);
-  let sub = 'IBGE Censo 2022 · gerado em '+new Date().toLocaleDateString('pt-BR');
-  if(destNome) sub = 'Para: '+destNome+' · '+sub;
-  doc.text(sub, M, y); y+=18;
 
-  doc.setFillColor(255,241,236); doc.roundedRect(M,y,W-2*M,52,4,4,'F');
-  doc.setTextColor(163,18,106); doc.setFont('helvetica','bold'); doc.setFontSize(9);
-  doc.text('POPULAÇÃO-ALVO (MULHERES 20+, CENSO 2022)', M+12, y+16);
-  doc.setFontSize(20); doc.text(m[3].toLocaleString('pt-BR'), M+12, y+40);
-  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90);
-  doc.text('População total do município: '+m[2].toLocaleString('pt-BR')+' hab.', W-M-12, y+40, {align:'right'});
-  y += 68;
+  function header(subtitulo){
+    doc.setFillColor(227,29,148); doc.rect(0,0,W,30,'F');
+    doc.setTextColor(255); doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text('G3 HEALTH SERVICE', M, 20);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.text('Proposta — Linda: rastreio de câncer de mama por infravermelho + IA', W-M, 20, {align:'right'});
+    doc.setTextColor(163,18,106); doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.text('PROPOSTA — '+m[0]+'/'+m[1], M, 46);
+    doc.setTextColor(110); doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    let sub = subtitulo+' · gerado em '+new Date().toLocaleDateString('pt-BR');
+    if(destNome) sub = 'Para: '+destNome+' · '+sub;
+    doc.text(sub, M, 62);
+    return 80;
+  }
+  function footer(){
+    const pages = doc.internal.getNumberOfPages();
+    for(let i=1;i<=pages;i++){ doc.setPage(i);
+      doc.setFontSize(7.5); doc.setTextColor(140);
+      doc.text('G3 Health Service · g3.healthservice@proton.me · Ferramenta de apoio à decisão, não substitui diagnóstico médico', M, H-22);
+      doc.text('Fontes: IBGE (Censo 2022), INCA, Observatório de Oncologia, lindalifetech.com · pág. '+i+'/'+pages, M, H-12); }
+  }
+
+  /* ---- página 1: PNSB ---- */
+  y = header('IBGE Censo 2022 · Problema, Necessidade, Solução e Benefício (PNSB)');
+  y += 10;
+  const pnsb = gerarTextoPNSB(c);
+  const blocos = [
+    ['1 · PROBLEMA', pnsb.problema, [155,34,34]],
+    ['2 · NECESSIDADE', pnsb.necessidade, [163,18,106]],
+    ['3 · SOLUÇÃO', pnsb.solucao, [45,62,163]],
+    ['4 · BENEFÍCIO', pnsb.beneficio, [30,110,70]],
+  ];
+  blocos.forEach(b=>{
+    doc.setFillColor(b[2][0],b[2][1],b[2][2]); doc.roundedRect(M, y, W-2*M, 16, 3, 3, 'F');
+    doc.setTextColor(255); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(b[0], M+8, y+11.5);
+    y += 22;
+    doc.setTextColor(60); doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    const linhas = doc.splitTextToSize(b[1], W-2*M);
+    doc.text(linhas, M, y);
+    y += linhas.length*11.5 + 16;
+  });
+
+  /* ---- página 2: gráficos ---- */
+  doc.addPage(); y = header('Síntese estatística — município, capital e estado');
+  y += 14;
+  const imgRegional = buildRegionalChartImage(m);
+  doc.addImage(imgRegional, 'PNG', M, y, W-2*M, (W-2*M)*260/700);
+  y += (W-2*M)*260/700 + 18;
+  const {imgAlcance, imgDeteccao} = buildFunnelChartImages(c.steps);
+  doc.addImage(imgAlcance, 'PNG', M, y, W-2*M, (W-2*M)*190/700);
+  y += (W-2*M)*190/700 + 16;
+  doc.addImage(imgDeteccao, 'PNG', M, y, W-2*M, (W-2*M)*230/700);
+  y += (W-2*M)*230/700 + 14;
+
+  /* ---- página 3: tabelas detalhadas ---- */
+  doc.addPage(); y = header('Detalhamento do funil, ROI e premissas');
+  y += 14;
 
   doc.autoTable({startY:y, margin:{left:M,right:M},
     head:[['Funil de rastreio (premissas ao lado)', 'Estimativa']],
@@ -988,18 +1107,14 @@ function montarPropostaPDF(){
     columnStyles:{1:{halign:'right'}} });
   y = doc.lastAutoTable.finalY + 16;
 
-  if(y > doc.internal.pageSize.getHeight() - 140){ doc.addPage(); y = 46; }
+  if(y > H - 140){ doc.addPage(); y = header('Sobre a tecnologia') + 10; }
   doc.setTextColor(42,31,39); doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.text('Sobre a Linda', M, y); y+=14;
   doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90);
   const texto = 'Dispositivo móvel com sensor infravermelho e inteligência artificial para rastreio (triagem) de câncer de mama — indolor, sem contato e sem radiação, com resultado em segundos. É complementar à mamografia, não a substitui, e não realiza diagnóstico. Estudo publicado (322 mulheres) encontrou taxa de achados suspeitos comparável à da mamografia (3,92% vs. 3,59%) — dado preliminar, sem validação de sensibilidade/especificidade contra biópsia até o momento.';
   const linhas = doc.splitTextToSize(texto, W-2*M);
   doc.text(linhas, M, y); y += linhas.length*10 + 10;
 
-  const pages = doc.internal.getNumberOfPages();
-  for(let i=1;i<=pages;i++){ doc.setPage(i); const ph = doc.internal.pageSize.getHeight();
-    doc.setFontSize(7.5); doc.setTextColor(140);
-    doc.text('G3 Health Service · g3.healthservice@proton.me · Ferramenta de apoio à decisão, não substitui diagnóstico médico', M, ph-22);
-    doc.text('Fontes: IBGE (Censo 2022), INCA, Observatório de Oncologia, lindalifetech.com · pág. '+i+'/'+pages, M, ph-12); }
+  footer();
 
   const fname = 'Proposta_Linda_'+m[0].replace(/ /g,'_')+'_'+m[1]+'.pdf';
   return {doc, fname};
